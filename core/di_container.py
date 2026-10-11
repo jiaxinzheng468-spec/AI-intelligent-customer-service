@@ -350,7 +350,7 @@ def configure_standard_services(config_instance: Any = None) -> 'DIContainer':
     其他服务（QueueManager、MessageConsumerManager）
     已通过模块级单例直接使用，无需重复注册。
 
-    必须在其他模块导入前调用（通常在 app.py 中），
+    必须在其他业务模块初始化前由 Web 应用 lifespan 调用，
     以确保服务在需要时可从容器获取。
     """
     # 提前导入，避免 Python 局部变量作用域问题

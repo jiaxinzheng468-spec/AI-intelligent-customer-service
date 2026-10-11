@@ -9,6 +9,8 @@ product_contract_source: ce-brainstorm
 execution: code
 ---
 
+> Historical plan: desktop UI and installer references describe the repository at planning time and are no longer current startup or release instructions.
+
 # Unified LiteLLM Provider Configuration - Plan
 
 ## Goal Capsule

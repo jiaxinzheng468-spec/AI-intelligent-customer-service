@@ -26,7 +26,9 @@ from bridge.context import (
 from utils.secret_store import protect_secret, unprotect_secret
 import utils.secret_store as secret_store
 from database.db_manager import DatabaseManager
-from sqlalchemy import text
+from sqlalchemy import create_engine, inspect, text
+
+from database.models import AccountRuntimePreference, Base
 
 
 def _context(from_uid: str, user_id: str = "account-1") -> Context:
@@ -266,6 +268,63 @@ class ConsumerRegressionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StorageRegressionTests(unittest.TestCase):
+    def test_old_database_adds_runtime_preference_table_without_data_loss(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "old.db"
+            engine = create_engine(f"sqlite:///{path}")
+            legacy_tables = [
+                table
+                for table in Base.metadata.sorted_tables
+                if table.name != "account_runtime_preferences"
+            ]
+            Base.metadata.create_all(engine, tables=legacy_tables)
+            engine.dispose()
+
+            manager = DatabaseManager(str(path))
+            try:
+                self.assertIn(
+                    "account_runtime_preferences",
+                    inspect(manager.engine).get_table_names(),
+                )
+            finally:
+                manager.dispose()
+
+    def test_runtime_preference_defaults_upserts_and_cascades(self):
+        with TemporaryDirectory() as directory:
+            manager = DatabaseManager(str(Path(directory) / "runtime.db"))
+            try:
+                manager.add_shop("pinduoduo", "shop", "Shop", "")
+                manager.add_account(
+                    "pinduoduo", "shop", "user", "name", "pass", cookies="{}"
+                )
+                account = manager.get_all_accounts_with_details()[0]
+                account_id = account["id"]
+
+                self.assertFalse(manager.get_auto_reply_enabled(account_id))
+                self.assertTrue(manager.set_auto_reply_enabled(account_id, True))
+                self.assertTrue(manager.set_auto_reply_enabled(account_id, True))
+                self.assertTrue(manager.get_auto_reply_enabled(account_id))
+                self.assertEqual(
+                    manager.get_auto_reply_enabled_accounts()[0]["id"], account_id
+                )
+
+                manager.record_recovery_result(
+                    account_id, "cookie=session-secret password=secret"
+                )
+                recovered = manager.get_account_by_id(account_id)
+                self.assertNotIn("session-secret", recovered["last_recovery_error"])
+                self.assertNotIn("password", recovered["last_recovery_error"].lower())
+
+                self.assertTrue(
+                    manager.delete_account("pinduoduo", "shop", "user")
+                )
+                with manager.get_session() as session:
+                    self.assertIsNone(
+                        session.get(AccountRuntimePreference, account_id)
+                    )
+            finally:
+                manager.dispose()
+
     def test_legacy_agent_database_is_reused(self):
         from Agent.CustomerAgent.custom.session_manager import SessionManager
 

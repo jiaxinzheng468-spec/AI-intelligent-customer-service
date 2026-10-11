@@ -16,26 +16,6 @@ from utils.runtime_path import get_log_path
 
 from loguru import logger
 
-# 可选的PyQt6依赖
-try:
-    from PyQt6.QtCore import QObject, pyqtSignal
-    PYQT6_AVAILABLE = True
-except ImportError:
-    PYQT6_AVAILABLE = False
-    # 创建占位符类
-    class QObject:
-        def __init__(self, *args, **kwargs):
-            pass
-    def pyqtSignal(*args):
-        class DummySignal:
-            def emit(self, *args, **kwargs):
-                pass
-            def connect(self, *args, **kwargs):
-                pass
-            def disconnect(self, *args, **kwargs):
-                pass
-        return DummySignal()
-
 # 默认配置
 DEFAULT_LOG_LEVEL = "info"
 DEFAULT_LOG_FILE = str(get_log_path())
@@ -171,45 +151,6 @@ class BusinessLogger:
 def get_business_logger(module_name: str) -> BusinessLogger:
     """获取业务日志记录器实例"""
     return BusinessLogger(module_name)
-
-# UI集成部分
-class UILogHandler(QObject):
-    """UI日志处理器，兼容现有LogHandler接口"""
-
-    log_received = pyqtSignal(str, str, object)  # level, message, record
-
-    def __init__(self):
-        super().__init__()
-        self.handler_id = None
-        self._install_loguru_patch()
-
-    def _install_loguru_patch(self):
-        """安装loguru拦截器"""
-        # 创建一个自定义的处理器来拦截日志
-        def ui_sink(message):
-            # 解析loguru消息以提取信息
-            record = message.record
-            level = record["level"].name
-            msg = record["message"]
-            # 发送信号
-            self.log_received.emit(level, msg, record)
-
-        # 安装UI处理器
-        self.handler_id = logger.add(ui_sink, level="DEBUG", catch=True)
-
-    def emit(self, record):
-        """为了兼容性保留"""
-        pass
-
-    def install(self):
-        """安装处理器 - 已经在__init__中完成"""
-        pass
-
-    def uninstall(self):
-        """卸载处理器"""
-        if self.handler_id:
-            logger.remove(self.handler_id)
-            self.handler_id = None
 
 # 上下文日志功能
 def format_conn_key(shop_id: Optional[str], user_id: Optional[str]) -> str:

@@ -361,8 +361,13 @@ async def set_platform_status(
     account = await asyncio.to_thread(account_service.get_account_by_id, account_id)
     if not account:
         raise APIError("ACCOUNT_NOT_FOUND", "账号不存在", 404)
-    if payload.status == 3 and request.app.state.runtimes.is_active(account_id):
-        await request.app.state.runtimes.stop(account_id)
+    if payload.status == 3 and (
+        request.app.state.runtimes.is_active(account_id)
+        or await asyncio.to_thread(
+            account_service.get_auto_reply_enabled, account_id
+        )
+    ):
+        await request.app.state.runtimes.disable(account_id)
 
     def set_status() -> bool:
         monitor = AccountMonitor(
@@ -409,7 +414,7 @@ async def start_runtime(
     request: Request,
     _: Session = Depends(require_csrf),
 ):
-    return await request.app.state.runtimes.start(account_id)
+    return await request.app.state.runtimes.enable(account_id)
 
 
 @router.post("/runtimes/{account_id}/stop", status_code=202)
@@ -418,7 +423,7 @@ async def stop_runtime(
     request: Request,
     _: Session = Depends(require_csrf),
 ):
-    return await request.app.state.runtimes.stop(account_id)
+    return await request.app.state.runtimes.disable(account_id)
 
 
 @router.post("/runtimes/actions/start-all", status_code=202)

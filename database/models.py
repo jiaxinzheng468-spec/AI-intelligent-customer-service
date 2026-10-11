@@ -66,9 +66,33 @@ class Account(Base):
     cookies = Column(Text)
     status = Column(Integer, default=None)
     shop = relationship("Shop", back_populates="accounts")
+    runtime_preference = relationship(
+        "AccountRuntimePreference",
+        back_populates="account",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
 
     def __repr__(self):
         return f"<Account(username='{self.username}')>"
+
+
+class AccountRuntimePreference(Base):
+    """Persist the administrator's desired auto-reply state."""
+
+    __tablename__ = "account_runtime_preferences"
+
+    account_id = Column(
+        Integer,
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    auto_reply_enabled = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+    last_recovery_attempt_at = Column(DateTime, nullable=True)
+    last_recovery_error = Column(Text, nullable=True)
+    account = relationship("Account", back_populates="runtime_preference")
 
 
 class Keyword(Base):

@@ -1,4 +1,4 @@
-"""账号/店铺/渠道服务层 - 封装账号管理与登录，解耦 UI 与 database/Channel。"""
+"""账号/店铺/渠道服务层 - 解耦 Web API 与 database/Channel。"""
 from database.db_manager import db_manager
 
 
@@ -55,6 +55,19 @@ class AccountService:
 
     def delete_account(self, channel_name, shop_id, user_id) -> bool:
         return db_manager.delete_account(channel_name, shop_id, user_id)
+
+    # ---- 自动回复运行偏好 ----
+    def get_auto_reply_enabled(self, account_id: int) -> bool:
+        return db_manager.get_auto_reply_enabled(account_id)
+
+    def set_auto_reply_enabled(self, account_id: int, enabled: bool) -> bool:
+        return db_manager.set_auto_reply_enabled(account_id, enabled)
+
+    def get_auto_reply_enabled_accounts(self):
+        return db_manager.get_auto_reply_enabled_accounts()
+
+    def record_recovery_result(self, account_id: int, error: str | None = None) -> bool:
+        return db_manager.record_recovery_result(account_id, error)
 
     # ---- 登录 ----
     async def login(self, name: str, password: str, headless: bool = False):

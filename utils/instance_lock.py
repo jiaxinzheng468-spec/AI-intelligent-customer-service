@@ -8,7 +8,7 @@ from utils.runtime_path import ensure_temp_dir
 
 
 class InstanceLock:
-    """Cross-platform advisory lock preventing desktop/web dual ownership."""
+    """Prevent multiple processes from owning the same Web data directory."""
 
     def __init__(self, name: str = "agent-customer.lock") -> None:
         self.path = ensure_temp_dir() / name
@@ -64,4 +64,3 @@ class InstanceLock:
 
 
 __all__ = ["InstanceLock"]
-

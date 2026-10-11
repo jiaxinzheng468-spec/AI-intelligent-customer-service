@@ -1,6 +1,6 @@
 # Agent-Customer
 
-电商 AI 客服系统，现提供 FastAPI Web 管理后台，并保留 PyQt6 桌面入口作为迁移期回滚方案。自动回复连接、登录和商品同步任务由服务端持有，关闭管理页面不会中断运行。
+电商 AI 客服系统，FastAPI Web 是唯一受支持的应用入口。自动回复连接、登录和商品同步任务由服务端持有，关闭管理页面不会中断运行。
 
 ## Web 版快速启动
 
@@ -29,18 +29,6 @@ uv run python web_app.py --host 127.0.0.1 --port 8000
 
 Web 版首版必须保持单进程、单 worker。需要从局域网或公网访问时，应在 HTTPS 反向代理后运行，并设置 `CUSTOMER_AGENT_SECURE_COOKIE=true`；不要把未加密的管理端口直接暴露到公网。完整部署、备份和回滚步骤见 [FastAPI Web 部署指南](docs/fastapi-web-deployment.md)。
 
-## 下载安装
-
-> 普通用户无需配置 Python 环境，直接下载安装包即可使用。
-
-**下载地址**：<https://github.com/JC0v0/Customer-Agent/releases/latest>
-
-在页面的 **Assets** 中下载 `Agent-Customer-Setup-<版本号>.exe`（约 100 MB），双击运行即可安装。
-
-- 安装到用户目录，**无需管理员权限**
-- 双击安装向导（中文）→ 桌面快捷方式 → 装完即用
-- 安装包已内置 Playwright 驱动，添加账号时自动调用本机已安装的 **Chrome 或 Edge** 浏览器完成登录，无需额外安装 Playwright 或 Chromium
-
 ## 功能特性
 
 - **多渠道支持**：目前支持拼多多平台 WebSocket 实时消息接收
@@ -51,6 +39,7 @@ Web 版首版必须保持单进程、单 worker。需要从局域网或公网访
 - **关键词转人工**：自动识别用户意图，支持关键词触发转人工服务
 - **消息队列处理**：异步消息队列 + 处理器链，支持高并发场景
 - **自动重连机制**：WebSocket 连接支持断线自动重连和心跳检测
+- **重启连接恢复**：已启用自动回复的账号会在 Web 服务重启后自动恢复连接
 
 ### AI Agent 可用工具
 
@@ -65,7 +54,7 @@ Web 版首版必须保持单进程、单 worker。需要从局域网或公网访
 ## 环境要求
 
 - Python >= 3.11
-- Windows 操作系统（打包为 exe 后可在 Windows 上独立运行）
+- Windows 操作系统（账号密钥使用 Windows DPAPI 保护）
 
 ## 安装
 
@@ -73,14 +62,6 @@ Web 版首版必须保持单进程、单 worker。需要从局域网或公网访
 # 安装依赖
 uv sync
 ```
-
-## 桌面版回滚入口
-
-```bash
-python app.py
-```
-
-桌面版与 Web 版共用现有 SQLite、配置和浏览器登录数据，但不能同时运行。两个入口都使用实例锁；若已有一个实例占用资源，另一个入口会拒绝启动。
 
 ## 配置
 
@@ -117,33 +98,9 @@ python app.py
 
 > 例如：修改 `product_manager.py` 的商品列表接口时，先用 curl 测试接口，确认数据在 `result.onSaleGoods` 字段而非 `result.goodsList`，字段名为驼峰 `goodsId` 而非下划线 `goods_id`，价格单位是"分"需除以 100 转换为"元"
 
-## 构建 Windows 安装包
+## 账号重启恢复
 
-在 Windows 上运行：
-
-```bash
-python scripts/build_win_exe.py --clean
-```
-
-该命令会依次完成：
-
-1. 用 PyInstaller 打包应用（产物 `dist/AgentCustomer/`，含内置 Playwright 驱动）
-2. 调用 Inno Setup 压缩为单个安装程序（产物 `dist/installer/Agent-Customer-Setup-<版本号>.exe`）
-
-版本号自动从最近的 git tag 读取（去掉前导 `v`），也可用环境变量 `APP_VERSION` 指定。
-
-> 若仅需 PyInstaller 的 onedir 目录、不生成安装程序，加 `--skip-installer`。
-
-### CI 自动构建
-
-推送 `v*` 格式的 tag 会触发 GitHub Actions 自动构建并发布 Release：
-
-```bash
-git tag v1.4
-git push origin v1.4
-```
-
-构建产物（`Agent-Customer-Setup-<版本号>.exe`）会自动上传到该 tag 对应的 Release 页，即上文「下载安装」的来源。
+管理员通过 Web 页面启动自动回复后，系统会把启用意图保存到 SQLite。FastAPI 重启时会以有限并发恢复这些账号；管理员主动停止的账号不会在下次启动时恢复。后台商品同步等任务仍然只保存在内存中，不提供断点恢复。
 
 ## 项目结构
 
@@ -166,10 +123,8 @@ Agent-Customer/
 ├── database/               # 数据库（SQLAlchemy + 知识服务 + 商品同步）
 ├── service/                # 服务层（账号/关键词服务薄封装）
 ├── server/                 # FastAPI API、运行时、后台任务与 Web 静态页面
-├── ui/                     # PyQt6 用户界面
 ├── utils/                  # 工具模块（日志、路径等）
-├── scripts/                # 构建脚本
-├── app.py                  # 桌面版回滚入口
+├── scripts/                # Playwright 安装辅助脚本
 └── web_app.py              # FastAPI Web 入口
 ```
 
@@ -178,7 +133,6 @@ Agent-Customer/
 | 类别 | 技术 |
 |------|------|
 | Web 框架 | FastAPI + Uvicorn + 原生 HTML/CSS/JavaScript |
-| 桌面回滚 | PyQt6 + pyqt6-fluent-widgets |
 | AI 框架 | 自研 Agent 框架 + LiteLLM 直接异步调用 |
 | 数据库 | SQLAlchemy + SQLite |
 | 中文分词 | jieba（知识库检索） |

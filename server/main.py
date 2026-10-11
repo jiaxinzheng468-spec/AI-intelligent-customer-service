@@ -59,8 +59,9 @@ def create_app(
             app.state.runtimes = runtimes
             app.state.log_buffer = log_buffer
             app.state.settings_lock = __import__("asyncio").Lock()
-            app.state.ready = True
             log_buffer.install()
+            runtimes.start_restore()
+            app.state.ready = True
             logger.info("Agent-Customer Web 服务已启动")
             yield
         finally:

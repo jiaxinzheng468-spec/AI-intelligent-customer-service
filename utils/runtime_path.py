@@ -285,7 +285,6 @@ if __name__ == "__main__":
     print("\n测试资源路径:")
     print(f"config.json: {get_resource_path('config.json')}")
     print(f"icon/icon.ico: {get_resource_path('icon/icon.ico')}")
-    print(f"app.py: {get_resource_path('app.py')}")
 
     # 测试路径是否存在
     print("\n路径存在性检查:")

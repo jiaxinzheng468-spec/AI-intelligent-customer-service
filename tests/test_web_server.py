@@ -8,6 +8,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from database.db_manager import DatabaseManager
 from server.api import _parse_import_file
 from server.auth import AuthService, hash_password, verify_password
 from server.events import EventBroker
@@ -173,6 +174,15 @@ class FakeChannel:
         self.stop_calls += 1
 
 
+class GateChannel(FakeChannel):
+    def __init__(self, started: asyncio.Event):
+        super().__init__()
+        self.started = started
+
+    async def start_account(self, shop_id, user_id, on_success, on_failure):
+        self.started.set()
+
+
 class RuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         FakeChannel.created = 0
@@ -184,7 +194,45 @@ class RuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
             "user_id": "20",
             "username": "agent",
             "status": 1,
+            "cookies": '{"session":"valid"}',
+            "auto_reply_enabled": False,
         }
+
+    def account_service_patches(self, preference, accounts=None, operations=None):
+        accounts = accounts or {7: self.account}
+        operations = operations if operations is not None else []
+
+        def get_account(account_id):
+            account = accounts.get(account_id)
+            if account is None:
+                return None
+            return dict(
+                account,
+                auto_reply_enabled=preference.get(account_id, False),
+            )
+
+        def set_enabled(account_id, enabled):
+            operations.append(("preference", enabled))
+            if account_id not in accounts:
+                return False
+            preference[account_id] = enabled
+            return True
+
+        return mock.patch.multiple(
+            "server.runtime_recovery.account_service",
+            get_account_by_id=get_account,
+            get_auto_reply_enabled=lambda account_id: preference.get(account_id, False),
+            set_auto_reply_enabled=set_enabled,
+            get_auto_reply_enabled_accounts=lambda: [
+                get_account(account_id)
+                for account_id, enabled in preference.items()
+                if enabled and account_id in accounts
+            ],
+            get_all_accounts_with_details=lambda: [
+                get_account(account_id) for account_id in accounts
+            ],
+            record_recovery_result=lambda account_id, error=None: True,
+        )
 
     async def test_start_and_stop_are_idempotent(self):
         manager = AccountRuntimeManager(EventBroker(), channel_factory=FakeChannel)
@@ -218,6 +266,183 @@ class RuntimeManagerTests(unittest.IsolatedAsyncioTestCase):
             await manager.start(7)
 
         self.assertEqual(FakeChannel.created, 1)
+
+    async def test_enable_disable_order_and_shutdown_preserves_preference(self):
+        preference = {7: False}
+        operations = []
+
+        class OrderedChannel(FakeChannel):
+            async def stop_account(self, shop_id, user_id):
+                operations.append(("channel", "stop"))
+                await super().stop_account(shop_id, user_id)
+
+        manager = AccountRuntimeManager(EventBroker(), channel_factory=OrderedChannel)
+        with self.account_service_patches(preference, operations=operations):
+            enabled = await manager.enable(7)
+            await asyncio.sleep(0)
+            self.assertTrue(enabled["auto_reply_enabled"])
+            self.assertTrue(preference[7])
+
+            await manager.shutdown()
+            self.assertTrue(preference[7])
+            self.assertNotIn(("preference", False), operations)
+
+            manager = AccountRuntimeManager(EventBroker(), channel_factory=OrderedChannel)
+            await manager.enable(7)
+            await asyncio.sleep(0)
+            operations.clear()
+            disabled = await manager.disable(7)
+
+        self.assertFalse(disabled["auto_reply_enabled"])
+        self.assertEqual(operations[:2], [("preference", False), ("channel", "stop")])
+
+    async def test_offline_account_is_not_persisted_as_enabled(self):
+        preference = {7: False}
+        offline = dict(self.account, status=3)
+        set_enabled = mock.Mock(return_value=True)
+        manager = AccountRuntimeManager(EventBroker(), channel_factory=FakeChannel)
+        with mock.patch.multiple(
+            "server.runtime_recovery.account_service",
+            get_account_by_id=lambda account_id: offline,
+            set_auto_reply_enabled=set_enabled,
+        ):
+            with self.assertRaisesRegex(Exception, "必须先上线"):
+                await manager.enable(7)
+        set_enabled.assert_not_called()
+
+    async def test_restore_failure_is_isolated_from_other_accounts(self):
+        accounts = {
+            7: self.account,
+            8: dict(self.account, id=8, user_id="21", username="agent-2"),
+        }
+        preference = {7: True, 8: True}
+
+        def channel_factory():
+            return FakeChannel(fail=FakeChannel.created == 0)
+
+        manager = AccountRuntimeManager(
+            EventBroker(),
+            channel_factory=channel_factory,
+            recovery_delays=(0.0,),
+            recovery_attempt_timeout=1,
+        )
+        with self.account_service_patches(preference, accounts=accounts):
+            summary = await manager.restore_enabled()
+            await asyncio.sleep(0)
+            await manager.shutdown()
+
+        self.assertEqual(summary.succeeded, [8])
+        self.assertEqual(summary.failed[0]["account_id"], 7)
+        self.assertEqual(FakeChannel.created, 2)
+        self.assertTrue(preference[7])
+
+    async def test_restore_retries_network_failure_with_bounded_schedule(self):
+        preference = {7: True}
+
+        def channel_factory():
+            return FakeChannel(fail=FakeChannel.created < 2)
+
+        manager = AccountRuntimeManager(
+            EventBroker(),
+            channel_factory=channel_factory,
+            recovery_delays=(0.0, 0.0, 0.0),
+            recovery_attempt_timeout=1,
+        )
+        with self.account_service_patches(preference):
+            summary = await manager.restore_enabled()
+            await asyncio.sleep(0)
+            await manager.shutdown()
+
+        self.assertEqual(summary.succeeded, [7])
+        self.assertEqual(FakeChannel.created, 3)
+
+    async def test_restore_rechecks_preference_when_disable_races(self):
+        preference = {7: True}
+        started = asyncio.Event()
+        manager = AccountRuntimeManager(
+            EventBroker(),
+            channel_factory=lambda: GateChannel(started),
+            recovery_delays=(0.0,),
+            recovery_attempt_timeout=1,
+        )
+        with self.account_service_patches(preference):
+            restore_task = asyncio.create_task(manager.restore_enabled())
+            await asyncio.wait_for(started.wait(), timeout=1)
+            await manager.disable(7)
+            summary = await asyncio.wait_for(restore_task, timeout=1)
+
+        self.assertFalse(preference[7])
+        self.assertEqual(summary.skipped, [7])
+        self.assertEqual(manager._records[7].state, "disconnected")
+
+    async def test_restart_restores_enabled_account_from_same_database(self):
+        with TemporaryDirectory() as directory:
+            database = DatabaseManager(str(Path(directory) / "restart.db"))
+            try:
+                database.add_shop("pinduoduo", "10", "测试店铺", "")
+                database.add_account(
+                    "pinduoduo",
+                    "10",
+                    "20",
+                    "agent",
+                    "password",
+                    cookies={"session": "valid"},
+                )
+                account = database.get_all_accounts_with_details()[0]
+                account_id = int(account["id"])
+                database.update_account_status(
+                    "pinduoduo", "10", "20", 1
+                )
+
+                patches = mock.patch.multiple(
+                    "server.runtime_recovery.account_service",
+                    get_account_by_id=database.get_account_by_id,
+                    get_auto_reply_enabled=database.get_auto_reply_enabled,
+                    set_auto_reply_enabled=database.set_auto_reply_enabled,
+                    get_auto_reply_enabled_accounts=(
+                        database.get_auto_reply_enabled_accounts
+                    ),
+                    get_all_accounts_with_details=(
+                        database.get_all_accounts_with_details
+                    ),
+                    record_recovery_result=database.record_recovery_result,
+                )
+                with patches:
+                    lifecycle_a = AccountRuntimeManager(
+                        EventBroker(), channel_factory=FakeChannel
+                    )
+                    await lifecycle_a.enable(account_id)
+                    await asyncio.sleep(0)
+                    await lifecycle_a.shutdown()
+                    self.assertTrue(
+                        database.get_auto_reply_enabled(account_id)
+                    )
+
+                    FakeChannel.created = 0
+                    lifecycle_b = AccountRuntimeManager(
+                        EventBroker(),
+                        channel_factory=FakeChannel,
+                        recovery_delays=(0.0,),
+                        recovery_attempt_timeout=1,
+                    )
+                    summary = await lifecycle_b.restore_enabled()
+                    await asyncio.sleep(0)
+                    self.assertEqual(summary.succeeded, [account_id])
+                    self.assertEqual(FakeChannel.created, 1)
+
+                    await lifecycle_b.disable(account_id)
+                    await lifecycle_b.shutdown()
+                    FakeChannel.created = 0
+                    lifecycle_c = AccountRuntimeManager(
+                        EventBroker(),
+                        channel_factory=FakeChannel,
+                        recovery_delays=(0.0,),
+                    )
+                    stopped_summary = await lifecycle_c.restore_enabled()
+                    self.assertEqual(stopped_summary.total, 0)
+                    self.assertEqual(FakeChannel.created, 0)
+            finally:
+                database.dispose()
 
 
 class JobManagerTests(unittest.IsolatedAsyncioTestCase):

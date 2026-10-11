@@ -13,6 +13,7 @@ from utils.llm_provider import (
     ProfileValidationError,
     build_llm_profile,
     capability_confirmation_for,
+    provider_choices,
     provider_spec,
     resolve_tool_capability,
 )
@@ -39,6 +40,23 @@ def _config_payload(**llm_overrides):
 
 
 class ProviderRegistryTests(unittest.TestCase):
+    def test_web_provider_choices_replace_desktop_provider_widget_contract(self):
+        self.assertEqual(
+            [value for value, _label in provider_choices()],
+            [
+                "deepseek",
+                "volcengine",
+                "openai_compatible",
+                "kimi",
+                "zhipu",
+                "qwen",
+            ],
+        )
+        self.assertEqual(
+            provider_spec("qwen").default_api_base,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+
     def test_all_built_in_routes_are_explicit_and_portable(self):
         expected = {
             LLMProvider.DEEPSEEK: "deepseek/",

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-安装 Playwright 浏览器脚本
-用于打包前安装必要的浏览器二进制文件
+安装 Playwright 浏览器脚本。
+用于 FastAPI Web 账号登录前安装必要的浏览器二进制文件。
 """
 
 import subprocess

@@ -2,7 +2,9 @@ import os
 from pathlib import Path
 import json
 from contextlib import contextmanager
+from datetime import datetime
 from sqlalchemy import create_engine
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Dict, Any, Optional, Union, Generator
@@ -10,7 +12,14 @@ from utils.logger_loguru import get_logger
 from utils.db_pragma import setup_sqlite_pragmas
 from utils.runtime_path import resolve_data_path
 from utils.secret_store import protect_secret, unprotect_secret
-from database.models import Base, Channel, Shop, Account, Keyword
+from database.models import (
+    Account,
+    AccountRuntimePreference,
+    Base,
+    Channel,
+    Keyword,
+    Shop,
+)
 
 
 class DatabaseManager:
@@ -375,10 +384,19 @@ class DatabaseManager:
             if not shop:
                 self.logger.warning(f"未找到店铺: {shop_id} (渠道: {channel_name})")
                 return None
-            account = self._get_account_by_user_id(session, shop, user_id)
-            if not account:
+            result = (
+                session.query(Account, AccountRuntimePreference)
+                .outerjoin(
+                    AccountRuntimePreference,
+                    AccountRuntimePreference.account_id == Account.id,
+                )
+                .filter(Account.shop_id == shop.id, Account.user_id == user_id)
+                .first()
+            )
+            if not result:
                 self.logger.warning(f"未找到账户: {user_id} (店铺 ID: {shop_id})")
                 return None
+            account, preference = result
             return {
                 'id': account.id,
                 'shop_id': account.shop_id,
@@ -386,22 +404,32 @@ class DatabaseManager:
                 'username': account.username,
                 'password': self._read_password(account),
                 'cookies': self._read_cookies(account),
-                'status': account.status
+                'status': account.status,
+                'auto_reply_enabled': bool(
+                    preference and preference.auto_reply_enabled
+                ),
+                'last_recovery_error': (
+                    preference.last_recovery_error if preference else None
+                ),
             }
 
     def get_account_by_id(self, account_id: int) -> Optional[Dict[str, Any]]:
         """Return one account with its channel/shop context for internal use."""
         with self.session_scope() as session:
             result = (
-                session.query(Account, Shop, Channel)
+                session.query(Account, Shop, Channel, AccountRuntimePreference)
                 .join(Shop, Account.shop_id == Shop.id)
                 .join(Channel, Shop.channel_id == Channel.id)
+                .outerjoin(
+                    AccountRuntimePreference,
+                    AccountRuntimePreference.account_id == Account.id,
+                )
                 .filter(Account.id == account_id)
                 .first()
             )
             if not result:
                 return None
-            account, shop, channel = result
+            account, shop, channel, preference = result
             return {
                 "id": account.id,
                 "shop_db_id": shop.id,
@@ -414,6 +442,12 @@ class DatabaseManager:
                 "password": self._read_password(account),
                 "cookies": self._read_cookies(account),
                 "status": account.status,
+                "auto_reply_enabled": bool(
+                    preference and preference.auto_reply_enabled
+                ),
+                "last_recovery_error": (
+                    preference.last_recovery_error if preference else None
+                ),
             }
 
     def add_account_from_login(self, login_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -524,14 +558,18 @@ class DatabaseManager:
         with self.session_scope() as session:
             # 使用 join 一次性查询所有数据
             results = (
-                session.query(Account, Shop, Channel)
+                session.query(Account, Shop, Channel, AccountRuntimePreference)
                 .join(Shop, Account.shop_id == Shop.id)
                 .join(Channel, Shop.channel_id == Channel.id)
+                .outerjoin(
+                    AccountRuntimePreference,
+                    AccountRuntimePreference.account_id == Account.id,
+                )
                 .all()
             )
 
             details = []
-            for account, shop, channel in results:
+            for account, shop, channel, preference in results:
                 details.append({
                     'id': account.id,
                     'shop_db_id': shop.id,
@@ -543,9 +581,104 @@ class DatabaseManager:
                     'password': self._read_password(account),
                     'status': account.status,
                     'user_id': account.user_id,
-                    'cookies': self._read_cookies(account)
+                    'cookies': self._read_cookies(account),
+                    'auto_reply_enabled': bool(
+                        preference and preference.auto_reply_enabled
+                    ),
+                    'last_recovery_error': (
+                        preference.last_recovery_error if preference else None
+                    ),
                 })
             return details
+
+    def get_auto_reply_enabled(self, account_id: int) -> bool:
+        """Return the persisted desired state; missing rows default to false."""
+        with self.session_scope() as session:
+            preference = session.get(AccountRuntimePreference, account_id)
+            return bool(preference and preference.auto_reply_enabled)
+
+    def set_auto_reply_enabled(self, account_id: int, enabled: bool) -> bool:
+        """Persist one account's desired state in a single transaction."""
+        with self.session_scope() as session:
+            if session.get(Account, account_id) is None:
+                return False
+            now = datetime.now()
+            statement = sqlite_insert(AccountRuntimePreference).values(
+                account_id=account_id,
+                auto_reply_enabled=bool(enabled),
+                updated_at=now,
+            )
+            session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[AccountRuntimePreference.account_id],
+                    set_={
+                        "auto_reply_enabled": bool(enabled),
+                        "updated_at": now,
+                    },
+                )
+            )
+            return True
+
+    def get_auto_reply_enabled_accounts(self) -> List[Dict[str, Any]]:
+        """Return account connection data for every enabled preference."""
+        with self.session_scope() as session:
+            results = (
+                session.query(Account, Shop, Channel, AccountRuntimePreference)
+                .join(Shop, Account.shop_id == Shop.id)
+                .join(Channel, Shop.channel_id == Channel.id)
+                .join(
+                    AccountRuntimePreference,
+                    AccountRuntimePreference.account_id == Account.id,
+                )
+                .filter(AccountRuntimePreference.auto_reply_enabled.is_(True))
+                .order_by(Account.id.asc())
+                .all()
+            )
+            return [
+                {
+                    "id": account.id,
+                    "shop_db_id": shop.id,
+                    "channel_name": channel.channel_name,
+                    "shop_id": shop.shop_id,
+                    "shop_name": shop.shop_name,
+                    "shop_logo": shop.shop_logo,
+                    "user_id": account.user_id,
+                    "username": account.username,
+                    "password": self._read_password(account),
+                    "cookies": self._read_cookies(account),
+                    "status": account.status,
+                    "auto_reply_enabled": True,
+                    "last_recovery_error": preference.last_recovery_error,
+                }
+                for account, shop, channel, preference in results
+            ]
+
+    def record_recovery_result(
+        self, account_id: int, error: Optional[str] = None
+    ) -> bool:
+        """Record only the safe recovery outcome supplied by the runtime layer."""
+        safe_errors = {
+            "network_error": "自动回复连接失败，请检查账号凭据和网络",
+            "platform_offline": "账号平台状态不是在线，请先上线账号",
+            "credentials_invalid": "账号登录凭据缺失或失效，请重新验证",
+            "shutdown": "服务关闭期间取消恢复",
+            "database_error": "账号恢复状态读取失败",
+        }
+        with self.session_scope() as session:
+            if session.get(Account, account_id) is None:
+                return False
+            preference = session.get(AccountRuntimePreference, account_id)
+            if preference is None:
+                preference = AccountRuntimePreference(account_id=account_id)
+                session.add(preference)
+            preference.last_recovery_attempt_at = datetime.now()
+            preference.last_recovery_error = (
+                safe_errors.get(str(error), "账号恢复失败，请查看服务端日志")
+                if error
+                else None
+            )
+            preference.updated_at = datetime.now()
+            return True
 
     def update_account_status(self, channel_name: str, shop_id: str, user_id: str, status: int) -> bool:
         """更新账号状态"""

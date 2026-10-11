@@ -1,10 +1,12 @@
 ---
 title: Agent-Customer FastAPI Web 版 PRD 与开发规格
 version: 1.0
-status: Draft
+status: Historical
 date: 2026-10-07
 owner: Agent-Customer
 ---
+
+> 历史设计资料：Web 迁移已经完成，当前唯一受支持的入口是 FastAPI Web。文中的桌面迁移与回滚描述仅保留决策背景，不再作为当前启动或发布说明。
 
 # Agent-Customer FastAPI Web 版 PRD 与开发规格
 
